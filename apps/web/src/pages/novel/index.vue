@@ -272,7 +272,7 @@ async function generateEpisodesWithAI() {
   const choice = modelChoices.value.find(model => model.value === selectedModel.value);
   if (!choice) { ElMessage.warning("请先选择一个语言模型"); return; }
   if (!chapters.value.length) return;
-  const novel = chapters.value.map((chapter, index) => `【章节索引 ${index}：${chapter.title}】\\n${chapter.content}`).join("\\n\\n");
+  const novel = chapters.value.map((chapter, index) => `【章节索引 ${index}：${chapter.title}】\n${chapter.content}`).join("\n\n");
   if (novel.length > 80000) { ElMessage.warning("当前版本单次分集规划最多处理 8 万字符，请先拆分小说"); return; }
   const systemPrompt = [
     "你是专业的漫剧总编剧。根据小说原文进行忠实改编，按用户指定集数规划连续剧情。",
@@ -280,8 +280,8 @@ async function generateEpisodesWithAI() {
     "不得添加原文不存在的关键人物或设定；不确定处写待确认。",
     "只输出合法 JSON：{episodes:[{number:number,title:string,goal:string,conflict:string,hook:string,chapterIndexes:number[]}]}。",
     "chapterIndexes 必须使用输入提供的章节索引，从 0 开始；每章至少分配给一集，不能引用不存在的索引。",
-  ].join("\\n");
-  const userPrompt = `作品：${novelTitle.value || "未命名小说"}\\n目标集数：${episodeCount.value}\\n故事档案：${JSON.stringify(story.value)}\\n\\n原文：\\n${novel}`;
+  ].join("\n");
+  const userPrompt = `作品：${novelTitle.value || "未命名小说"}\n目标集数：${episodeCount.value}\n故事档案：${JSON.stringify(story.value)}\n\n原文：\n${novel}`;
   analyzing.value = true;
   aiOutput.value = "";
   analysisController = new AbortController();
@@ -303,7 +303,7 @@ async function generateEpisodesWithAI() {
     let fullText = "";
     let completed = false;
     const handleEvent = (raw: string) => {
-      const dataLine = raw.split("\\n").find(line => line.startsWith("data: "));
+      const dataLine = raw.split("\n").find(line => line.startsWith("data: "));
       if (!dataLine) return;
       const event = JSON.parse(dataLine.slice(6)) as { type?: string; delta?: string; message?: unknown };
       if (event.type === "text" && typeof event.delta === "string") { fullText += event.delta; aiOutput.value = fullText; }
@@ -313,7 +313,7 @@ async function generateEpisodesWithAI() {
     while (true) {
       const { value, done } = await reader.read();
       buffer += decoder.decode(value, { stream: !done });
-      const events = buffer.split("\\n\\n");
+      const events = buffer.split("\n\n");
       buffer = events.pop() ?? "";
       for (const raw of events) handleEvent(raw);
       if (done) break;
