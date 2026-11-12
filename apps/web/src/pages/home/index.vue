@@ -14,6 +14,10 @@
         </button>
       </div>
       <nav class="sidebarNav" aria-label="首页导航">
+        <button class="sidebarItem" type="button" aria-label="小说智能改编" title="小说智能改编" @click="router.push('/novel')">
+          <icon-book-2 :size="18" aria-hidden="true" />
+          <span class="sidebarText">小说改编</span>
+        </button>
         <button v-for="section in homeSections" :key="section.id" class="sidebarItem" :class="{ active: activeSection === section.id }" type="button" :aria-current="activeSection === section.id ? 'location' : undefined" :aria-label="translate(section.label)" :title="translate(section.label)" @click="scrollToSection(section.id)">
           <component :is="section.icon" :size="18" aria-hidden="true" />
           <span class="sidebarText">{{ translate(section.label) }}</span>
