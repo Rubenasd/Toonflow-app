@@ -9,7 +9,17 @@
       <div class="headerActions">
         <el-button :disabled="!chapters.length" @click="saveProject">保存项目</el-button>
         <el-button @click="loadSavedProject">恢复本地项目</el-button>
+        <div class="headerActions">
+        <el-select v-model="selectedModel" filterable clearable placeholder="选择 AI 模型" style="width: 230px" :disabled="analyzing">
+          <el-option v-for="model in modelChoices" :key="model.value" :label="`${model.providerLabel} / ${model.label}`" :value="model.value" />
+        </el-select>
+        <el-button type="primary" :disabled="!chapters.length || !selectedModel || analyzing" :loading="analyzing" @click="analyzeStory">AI 分析故事</el-button>
+        <el-button :disabled="!chapters.length" @click="saveProject">保存项目</el-button>
+        <el-button @click="loadSavedProject">恢复本地项目</el-button>
         <el-button :disabled="!chapters.length" @click="exportProject">导出项目 JSON</el-button>
+        <el-button @click="projectInput?.click()">导入项目 JSON</el-button>
+        <input ref="projectInput" type="file" accept=".json,application/json" hidden @change="importProject" />
+      </div>
         <el-button @click="projectInput?.click()">导入项目 JSON</el-button>
         <input ref="projectInput" type="file" accept=".json,application/json" hidden @change="importProject" />
       </div>
@@ -42,6 +52,14 @@
           <el-input v-model="chapters[activeChapter]!.content" type="textarea" :autosize="{ minRows: 16, maxRows: 30 }" resize="vertical" aria-label="章节正文" />
         </div>
       </div>
+    </section>
+
+    <section v-if="chapters.length" class="storyPanel">
+      <div class="aiAnalysisBar">
+        <div><strong>AI 故事分析</strong><p>使用 Toonflow 已配置的语言模型，分析原文并提取故事档案。原文会发送给所选模型供应商。</p></div>
+        <el-button v-if="analyzing" type="danger" plain @click="analysisController?.abort()">停止分析</el-button>
+      </div>
+      <el-input v-if="aiOutput" v-model="aiOutput" type="textarea" :rows="5" readonly placeholder="AI 分析过程……" />
     </section>
 
     <section v-if="chapters.length" class="storyPanel">
@@ -92,8 +110,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import { ElMessage } from "element-plus";
+import { modelChoices } from "@/stores/settings";
 
 type NovelChapter = { id: string; title: string; content: string };
 type Character = { id: string; name: string; identity: string; goal: string; relationship: string };
@@ -103,6 +122,13 @@ type Episode = { id: string; number: number; title: string; goal: string; confli
 const fileInput = ref<HTMLInputElement>();
 const projectInput = ref<HTMLInputElement>();
 const storageKey = "manju-ai-studio:novel-project:v1";
+const selectedModel = ref("");
+const analyzing = ref(false);
+const aiOutput = ref("");
+let analysisController: AbortController | undefined;
+watch(modelChoices, models => {
+  if (!selectedModel.value && models.length) selectedModel.value = models[0]!.value;
+}, { immediate: true });
 const novelTitle = ref("");
 const sourceText = ref("");
 const chapters = ref<NovelChapter[]>([]);
@@ -142,6 +168,97 @@ function parseChapters() {
   episodes.value = [];
   activeChapter.value = 0;
   ElMessage.success(`已整理 ${parsed.length} 个章节`);
+}
+
+function extractResponseText(message: unknown) {
+  if (!message || typeof message !== "object" || !("content" in message) || !Array.isArray(message.content)) return "";
+  return message.content.filter((part): part is { type: "text"; text: string } =>
+    !!part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part && typeof part.text === "string")
+    .map(part => part.text).join("\\n");
+}
+
+async function analyzeStory() {
+  const choice = modelChoices.value.find(model => model.value === selectedModel.value);
+  if (!choice) { ElMessage.warning("请先在设置中配置并选择一个语言模型"); return; }
+  if (!chapters.value.length) return;
+  const novel = chapters.value.map((chapter, index) => `【第 ${index + 1} 章：${chapter.title}】\\n${chapter.content}`).join("\\n\\n");
+  if (novel.length > 80000) { ElMessage.warning("当前版本单次分析最多处理 8 万字符，请先拆分章节或分批分析"); return; }
+  const systemPrompt = [
+    "你是一名专业的中文网文改编总编剧，负责把小说整理为可供漫剧制作的故事开发档案。",
+    "必须忠于原文，不得补造原文没有的信息；不确定的内容标记为“待确认”。",
+    "只输出合法 JSON，不要 Markdown 代码围栏或额外解释。",
+    "JSON 结构：{logline:string,theme:string,conflict:string,world:string,characters:[{name:string,identity:string,goal:string,relationship:string}]}。",
+    "人物只提取对主线有作用的主要人物，关系要写明依据；没有明确动机时写“待确认”。",
+  ].join("\\n");
+  const userPrompt = `作品：${novelTitle.value || "未命名小说"}\\n请分析以下小说原文并输出故事档案 JSON：\\n\\n${novel}`;
+  analyzing.value = true;
+  aiOutput.value = "";
+  analysisController = new AbortController();
+  try {
+    const response = await fetch("/api/ai/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-toonflow-workspace": "1" },
+      signal: analysisController.signal,
+      body: JSON.stringify({
+        providerId: choice.providerId, modelId: choice.modelId,
+        context: { systemPrompt, messages: [{ role: "user", content: userPrompt, timestamp: Date.now() }] },
+      }),
+    });
+    if (!response.ok || !response.body) {
+      const detail = await response.json().catch(() => null) as { message?: string } | null;
+      throw new Error(detail?.message || `模型请求失败（${response.status}）`);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let fullText = "";
+    let completed = false;
+    const handleEvent = (raw: string) => {
+      const dataLine = raw.split("\\n").find(line => line.startsWith("data: "));
+      if (!dataLine) return;
+      const event = JSON.parse(dataLine.slice(6)) as { type?: string; delta?: string; message?: unknown };
+      if (event.type === "text" && typeof event.delta === "string") {
+        fullText += event.delta;
+        aiOutput.value = fullText;
+      } else if (event.type === "done") {
+        const finalText = extractResponseText(event.message);
+        if (finalText) fullText = finalText;
+        completed = true;
+      } else if (event.type === "error") {
+        throw new Error(typeof event.message === "string" ? event.message : "模型分析失败");
+      }
+    };
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const events = buffer.split("\\n\\n");
+      buffer = events.pop() ?? "";
+      for (const raw of events) handleEvent(raw);
+      if (done) break;
+    }
+    if (!completed) throw new Error("模型连接已结束，但没有收到完整结果");
+    const jsonStart = fullText.indexOf("{");
+    const jsonEnd = fullText.lastIndexOf("}");
+    if (jsonStart < 0 || jsonEnd <= jsonStart) throw new Error("模型没有返回有效 JSON，请重试或更换模型");
+    const result = JSON.parse(fullText.slice(jsonStart, jsonEnd + 1)) as Partial<typeof story.value>;
+    story.value = {
+      logline: typeof result.logline === "string" ? result.logline : "",
+      theme: typeof result.theme === "string" ? result.theme : "",
+      conflict: typeof result.conflict === "string" ? result.conflict : "",
+      world: typeof result.world === "string" ? result.world : "",
+      characters: Array.isArray(result.characters) ? result.characters.filter(person => person && typeof person.name === "string").map(person => ({
+        id: crypto.randomUUID(), name: person.name || "", identity: person.identity || "",
+        goal: person.goal || "", relationship: person.relationship || "",
+      })) : [],
+    };
+    ElMessage.success("AI 故事分析完成，请审核人物与剧情信息");
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") ElMessage.info("已停止 AI 分析");
+    else ElMessage.error(error instanceof Error ? error.message : "AI 分析失败");
+  } finally {
+    analyzing.value = false;
+    analysisController = undefined;
+  }
 }
 
 function addCharacter() {
@@ -267,6 +384,8 @@ function exportProject() {
 .novelStudio { max-width: 1180px; margin: 0 auto; padding: 36px; display: grid; gap: 22px; color: var(--el-text-color-primary); }
 .studioHeader, .panelTitle, .importFooter, .episodeToolbar, .episodeHeading, .sceneHeading { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .headerActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.aiAnalysisBar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.aiAnalysisBar p { margin: 5px 0 0; color: var(--el-text-color-secondary); font-size: 12px; }
 .studioHeader h1 { margin: 5px 0; font-size: 30px; }
 .eyebrow { margin: 0; color: var(--el-color-primary); font-size: 11px; letter-spacing: 2px; }
 .subtitle, .panelTitle p { margin: 5px 0 0; color: var(--el-text-color-secondary); font-size: 13px; }
@@ -298,6 +417,7 @@ function exportProject() {
   .novelStudio { padding: 18px; }
   .studioHeader, .panelTitle { align-items: flex-start; flex-wrap: wrap; }
   .headerActions { justify-content: flex-start; }
+  .aiAnalysisBar { align-items: flex-start; flex-direction: column; }
   .chapterLayout, .storyGrid { grid-template-columns: 1fr; }
   .chapterList { max-height: 220px; }
   .characterRow { grid-template-columns: 1fr 1fr; }
