@@ -27,7 +27,7 @@
 
     <section class="importPanel">
       <div class="panelTitle">
-        <div><h2>01 / 导入小说</h2><p>支持 TXT、Markdown。原文只在当前浏览器处理中，不会自动上传。</p></div>
+        <div><h2>01 / 导入小说</h2><p>支持 TXT、Markdown。仅在点击 AI 分析时，章节内容才会发送给所选模型供应商。</p></div>
         <el-button type="primary" @click="fileInput?.click()">选择文件</el-button>
         <input ref="fileInput" type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" hidden @change="importFile" />
       </div>
@@ -120,7 +120,7 @@ import { modelChoices } from "@/stores/settings";
 type NovelChapter = { id: string; title: string; content: string };
 type Character = { id: string; name: string; identity: string; goal: string; relationship: string };
 type Scene = { id: string; location: string; action: string; dialogue: string };
-type Episode = { id: string; number: number; title: string; goal: string; conflict: string; hook: string; chapterRange: string; sourceChapterTitles: string[]; scenes: Scene[] };
+type Episode = { id: string; number: number; title: string; goal: string; conflict: string; hook: string; chapterRange: string; sourceChapterTitles: string[]; sourceChapterIds: string[]; scenes: Scene[] };
 
 const fileInput = ref<HTMLInputElement>();
 const projectInput = ref<HTMLInputElement>();
@@ -336,7 +336,7 @@ async function generateEpisodesWithAI() {
         conflict: typeof item.conflict === "string" ? item.conflict : "待补充",
         hook: typeof item.hook === "string" ? item.hook : "待补充",
         chapterRange: source.length ? source.length === 1 ? source[0]!.title : `${source[0]!.title} — ${source[source.length - 1]!.title}` : "原文范围待确认",
-        sourceChapterTitles: source.map(chapter => chapter.title), scenes: [],
+        sourceChapterTitles: source.map(chapter => chapter.title), sourceChapterIds: source.map(chapter => chapter.id), scenes: [],
       };
     });
     const unassigned = chapters.value.map((_, index) => index).filter(index => !assigned.has(index));
@@ -369,14 +369,14 @@ function buildEpisodes() {
       conflict: paragraphs[Math.min(1, paragraphs.length - 1)]?.slice(0, 160) || "请明确本集的主要矛盾",
       hook: ending.slice(-160) || "请设计推动观众继续观看的结尾悬念",
       chapterRange: group.length === 1 ? first.title : `${first.title} — ${last.title}`,
-      sourceChapterTitles: group.map(chapter => chapter.title), scenes: [],
+      sourceChapterTitles: group.map(chapter => chapter.title), sourceChapterIds: group.map(chapter => chapter.id), scenes: [],
     };
   });
   ElMessage.success(`已生成 ${episodes.value.length} 集分集草案，请逐集审核`);
 }
 
 function createScript(episode: Episode) {
-  const source = chapters.value.filter(chapter => episode.sourceChapterTitles.includes(chapter.title));
+  const source = chapters.value.filter(chapter => episode.sourceChapterIds?.length ? episode.sourceChapterIds.includes(chapter.id) : episode.sourceChapterTitles.includes(chapter.title));
   const paragraphs = source.flatMap(chapter => chapter.content.split(/\n+/).map(value => value.trim()).filter(value => value.length > 12));
   episode.scenes = paragraphs.slice(0, 8).map((paragraph, index) => ({
     id: crypto.randomUUID(),
