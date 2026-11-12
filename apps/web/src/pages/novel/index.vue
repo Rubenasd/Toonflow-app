@@ -6,7 +6,12 @@
         <h1>小说智能改编</h1>
         <p class="subtitle">从原文整理到故事档案、分集规划和剧本初稿。</p>
       </div>
-      <el-button :disabled="!chapters.length" @click="exportProject">导出项目 JSON</el-button>
+      <div class="headerActions">
+        <el-button :disabled="!chapters.length" @click="saveProject">保存项目</el-button>
+        <el-button :disabled="!chapters.length" @click="exportProject">导出项目 JSON</el-button>
+        <el-button @click="projectInput?.click()">导入项目 JSON</el-button>
+        <input ref="projectInput" type="file" accept=".json,application/json" hidden @change="importProject" />
+      </div>
     </header>
 
     <section class="importPanel">
@@ -95,6 +100,8 @@ type Scene = { id: string; location: string; action: string; dialogue: string };
 type Episode = { id: string; number: number; title: string; goal: string; conflict: string; hook: string; chapterRange: string; sourceChapterTitles: string[]; scenes: Scene[] };
 
 const fileInput = ref<HTMLInputElement>();
+const projectInput = ref<HTMLInputElement>();
+const storageKey = "manju-ai-studio:novel-project:v1";
 const novelTitle = ref("");
 const sourceText = ref("");
 const chapters = ref<NovelChapter[]>([]);
@@ -177,12 +184,52 @@ function createScript(episode: Episode) {
   else ElMessage.success(`已根据原文段落生成 ${episode.scenes.length} 个场景初稿，请补充人物对白和镜头动作`);
 }
 
-function exportProject() {
-  const data = {
+function projectData() {
+  return {
     schemaVersion: 2, title: novelTitle.value.trim() || "未命名小说",
     exportedAt: new Date().toISOString(), sourceCharacterCount: sourceText.value.length,
-    story: story.value, chapters: chapters.value, episodes: episodes.value,
+    sourceText: sourceText.value, story: story.value, chapters: chapters.value, episodes: episodes.value,
   };
+}
+
+function saveProject() {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(projectData()));
+    ElMessage.success("项目已保存到当前浏览器");
+  } catch (error) {
+    ElMessage.error(error instanceof Error && error.name === "QuotaExceededError" ? "浏览器本地空间不足，请导出 JSON 备份" : "保存失败，请导出 JSON 备份");
+  }
+}
+
+async function importProject(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text()) as Record<string, unknown>;
+    if (data.schemaVersion !== 1 && data.schemaVersion !== 2) throw new Error("不支持的项目版本");
+    if (!Array.isArray(data.chapters) || !data.chapters.every(item => item && typeof item.title === "string" && typeof item.content === "string")) {
+      throw new Error("项目文件缺少有效章节数据");
+    }
+    novelTitle.value = typeof data.title === "string" ? data.title : "导入的漫剧项目";
+    sourceText.value = typeof data.sourceText === "string" ? data.sourceText : data.chapters.map(item => item.content).join("\\n\\n");
+    chapters.value = data.chapters as NovelChapter[];
+    story.value = data.story && typeof data.story === "object"
+      ? { logline: "", theme: "", conflict: "", world: "", characters: [], ...(data.story as typeof story.value) }
+      : { logline: "", theme: "", conflict: "", world: "", characters: [] };
+    episodes.value = Array.isArray(data.episodes) ? data.episodes as Episode[] : [];
+    episodeCount.value = Math.max(1, episodes.value.length || Math.min(12, chapters.value.length));
+    activeChapter.value = 0;
+    ElMessage.success("项目导入成功");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "项目文件读取失败");
+  } finally {
+    input.value = "";
+  }
+}
+
+function exportProject() {
+  const data = projectData();
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -195,6 +242,7 @@ function exportProject() {
 <style lang="scss" scoped>
 .novelStudio { max-width: 1180px; margin: 0 auto; padding: 36px; display: grid; gap: 22px; color: var(--el-text-color-primary); }
 .studioHeader, .panelTitle, .importFooter, .episodeToolbar, .episodeHeading, .sceneHeading { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.headerActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .studioHeader h1 { margin: 5px 0; font-size: 30px; }
 .eyebrow { margin: 0; color: var(--el-color-primary); font-size: 11px; letter-spacing: 2px; }
 .subtitle, .panelTitle p { margin: 5px 0 0; color: var(--el-text-color-secondary); font-size: 13px; }
@@ -225,6 +273,7 @@ function exportProject() {
 @media (max-width: 760px) {
   .novelStudio { padding: 18px; }
   .studioHeader, .panelTitle { align-items: flex-start; flex-wrap: wrap; }
+  .headerActions { justify-content: flex-start; }
   .chapterLayout, .storyGrid { grid-template-columns: 1fr; }
   .chapterList { max-height: 220px; }
   .characterRow { grid-template-columns: 1fr 1fr; }
