@@ -20,6 +20,10 @@ const router = createRouter({
       component: () => import("@/pages/home/index.vue"),
     },
     {
+      path: "/novel",
+      component: () => import("@/pages/novel/index.vue"),
+    },
+    {
       path: "/canvas",
       redirect: "/workspace",
     },
