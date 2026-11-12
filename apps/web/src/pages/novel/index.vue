@@ -8,6 +8,7 @@
       </div>
       <div class="headerActions">
         <el-button :disabled="!chapters.length" @click="saveProject">保存项目</el-button>
+        <el-button @click="loadSavedProject">恢复本地项目</el-button>
         <el-button :disabled="!chapters.length" @click="exportProject">导出项目 JSON</el-button>
         <el-button @click="projectInput?.click()">导入项目 JSON</el-button>
         <input ref="projectInput" type="file" accept=".json,application/json" hidden @change="importProject" />
@@ -198,6 +199,29 @@ function saveProject() {
     ElMessage.success("项目已保存到当前浏览器");
   } catch (error) {
     ElMessage.error(error instanceof Error && error.name === "QuotaExceededError" ? "浏览器本地空间不足，请导出 JSON 备份" : "保存失败，请导出 JSON 备份");
+  }
+}
+
+function loadSavedProject() {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) { ElMessage.info("当前浏览器还没有保存过漫剧项目"); return; }
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    if (!Array.isArray(data.chapters) || !data.chapters.every(item => item && typeof item.title === "string" && typeof item.content === "string")) {
+      throw new Error("本地项目数据无效");
+    }
+    novelTitle.value = typeof data.title === "string" ? data.title : "未命名小说";
+    sourceText.value = typeof data.sourceText === "string" ? data.sourceText : data.chapters.map(item => item.content).join("\\n\\n");
+    chapters.value = data.chapters as NovelChapter[];
+    story.value = data.story && typeof data.story === "object"
+      ? { logline: "", theme: "", conflict: "", world: "", characters: [], ...(data.story as typeof story.value) }
+      : { logline: "", theme: "", conflict: "", world: "", characters: [] };
+    episodes.value = Array.isArray(data.episodes) ? data.episodes as Episode[] : [];
+    episodeCount.value = Math.max(1, episodes.value.length || Math.min(12, chapters.value.length));
+    activeChapter.value = 0;
+    ElMessage.success("已恢复本地项目");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "恢复本地项目失败");
   }
 }
 
