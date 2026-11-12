@@ -98,13 +98,21 @@
         <label>核心冲突<el-input v-model="episode.conflict" type="textarea" :rows="2" /></label>
         <label>结尾钩子<el-input v-model="episode.hook" type="textarea" :rows="2" /></label>
         <div class="episodeSource">原文范围：{{ episode.sourceChapterTitles.join("、") }}</div>
-        <el-button text type="primary" @click="createScript(episode)">生成剧本初稿</el-button>
+        <div class="scriptActions">
+          <el-button type="primary" plain :disabled="!selectedModel || analyzing" :loading="analyzing" @click="generateScriptWithAI(episode)">AI 生成剧本</el-button>
+          <el-button text @click="createScript(episode)">规则初稿</el-button>
+        </div>
         <div v-if="episode.scenes.length" class="sceneList">
           <div v-for="(scene, index) in episode.scenes" :key="scene.id" class="sceneCard">
             <div class="sceneHeading"><strong>场景 {{ index + 1 }}</strong><el-button text type="danger" @click="episode.scenes.splice(index, 1)">删除场景</el-button></div>
             <el-input v-model="scene.location" placeholder="场景 / 地点" />
+            <el-input v-model="scene.time" placeholder="时间 / 内外景（如：夜，内景）" />
+            <el-input v-model="scene.characters" placeholder="出场人物（用顿号分隔）" />
+            <el-input v-model="scene.shot" type="textarea" :rows="2" placeholder="镜头设计：景别、机位、运镜" />
             <el-input v-model="scene.action" type="textarea" :rows="3" placeholder="动作与画面描述" />
-            <el-input v-model="scene.dialogue" type="textarea" :rows="2" placeholder="对白 / 旁白（可后续补充）" />
+            <el-input v-model="scene.dialogue" type="textarea" :rows="3" placeholder="角色对白（角色名：台词）" />
+            <el-input v-model="scene.narration" type="textarea" :rows="2" placeholder="旁白 / 画外音" />
+            <el-input v-model="scene.source" placeholder="原文依据 / 对应段落" />
           </div>
         </div>
       </article>
@@ -119,7 +127,7 @@ import { modelChoices } from "@/stores/settings";
 
 type NovelChapter = { id: string; title: string; content: string };
 type Character = { id: string; name: string; identity: string; goal: string; relationship: string };
-type Scene = { id: string; location: string; action: string; dialogue: string };
+type Scene = { id: string; location: string; time: string; characters: string[]; shot: string; action: string; dialogue: string; narration: string; source: string };
 type Episode = { id: string; number: number; title: string; goal: string; conflict: string; hook: string; chapterRange: string; sourceChapterTitles: string[]; sourceChapterIds: string[]; scenes: Scene[] };
 
 const fileInput = ref<HTMLInputElement>();
@@ -375,14 +383,99 @@ function buildEpisodes() {
   ElMessage.success(`已生成 ${episodes.value.length} 集分集草案，请逐集审核`);
 }
 
+async function generateScriptWithAI(episode: Episode) {
+  const choice = modelChoices.value.find(model => model.value === selectedModel.value);
+  if (!choice) { ElMessage.warning("请先选择一个语言模型"); return; }
+  const source = chapters.value.filter(chapter => episode.sourceChapterIds?.length
+    ? episode.sourceChapterIds.includes(chapter.id)
+    : episode.sourceChapterTitles.includes(chapter.title));
+  if (!source.length) { ElMessage.warning("本集没有关联原文章节，请先检查分集映射"); return; }
+  const original = source.map(chapter => `【${chapter.title}】\\n${chapter.content}`).join("\\n\\n");
+  if (original.length > 50000) { ElMessage.warning("本集原文超过 5 万字符，请拆分章节或缩小本集范围"); return; }
+  const systemPrompt = [
+    "你是资深中文漫剧编剧和分镜导演。把给定小说片段改编为可制作的场景剧本。",
+    "严格忠于原文，不得编造关键事实、人物关系或台词；原文没有明确对白时可写“待编写”，不要伪造原句。",
+    "将剧情拆成有戏剧目的的场景，保留因果、冲突和情绪变化。每场需有地点、时间、出场人物、画面动作、对白、旁白和镜头设计。",
+    "镜头设计使用明确景别（远景/全景/中景/近景/特写）、机位和必要运镜；动作描述要可视化、可拍摄。",
+    "只输出合法 JSON，不要 Markdown：{scenes:[{location:string,time:string,characters:string[],shot:string,action:string,dialogue:string,narration:string,source:string}]}。",
+    "source 填写对应原文章节标题和关键原文依据；每集建议 3-8 场，避免把每个段落机械拆成一场。",
+  ].join("\\n");
+  const userPrompt = `作品：${novelTitle.value}\\n第 ${episode.number} 集：${episode.title}\\n本集目标：${episode.goal}\\n核心冲突：${episode.conflict}\\n结尾钩子：${episode.hook}\\n故事档案：${JSON.stringify(story.value)}\\n\\n原文：\\n${original}`;
+  analyzing.value = true;
+  aiOutput.value = "";
+  analysisController = new AbortController();
+  try {
+    const response = await fetch("/api/ai/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-toonflow-workspace": "1" },
+      signal: analysisController.signal,
+      body: JSON.stringify({ providerId: choice.providerId, modelId: choice.modelId,
+        context: { systemPrompt, messages: [{ role: "user", content: userPrompt, timestamp: Date.now() }] } }),
+    });
+    if (!response.ok || !response.body) {
+      const detail = await response.json().catch(() => null) as { message?: string } | null;
+      throw new Error(detail?.message || `模型请求失败（${response.status}）`);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let fullText = "";
+    let completed = false;
+    const handleEvent = (raw: string) => {
+      const dataLine = raw.split("\\n").find(line => line.startsWith("data: "));
+      if (!dataLine) return;
+      const event = JSON.parse(dataLine.slice(6)) as { type?: string; delta?: string; message?: unknown };
+      if (event.type === "text" && typeof event.delta === "string") { fullText += event.delta; aiOutput.value = fullText; }
+      else if (event.type === "done") { fullText = extractResponseText(event.message) || fullText; completed = true; }
+      else if (event.type === "error") throw new Error(typeof event.message === "string" ? event.message : "剧本生成失败");
+    };
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const events = buffer.split("\\n\\n");
+      buffer = events.pop() ?? "";
+      for (const raw of events) handleEvent(raw);
+      if (done) break;
+    }
+    if (!completed) throw new Error("模型连接结束，但没有收到完整结果");
+    const jsonStart = fullText.indexOf("{");
+    const jsonEnd = fullText.lastIndexOf("}");
+    if (jsonStart < 0 || jsonEnd <= jsonStart) throw new Error("模型未返回有效 JSON");
+    const parsed = JSON.parse(fullText.slice(jsonStart, jsonEnd + 1)) as { scenes?: Array<{
+      location?: string; time?: string; characters?: string[]; shot?: string;
+      action?: string; dialogue?: string; narration?: string; source?: string;
+    }> };
+    if (!Array.isArray(parsed.scenes) || !parsed.scenes.length) throw new Error("模型没有生成场景，请调整原文范围后重试");
+    episode.scenes = parsed.scenes.filter(scene => scene && typeof scene.action === "string").map(scene => ({
+      id: crypto.randomUUID(),
+      location: typeof scene.location === "string" ? scene.location : "地点待确认",
+      time: typeof scene.time === "string" ? scene.time : "时间待确认",
+      characters: Array.isArray(scene.characters) ? scene.characters.filter((name): name is string => typeof name === "string") : [],
+      shot: typeof scene.shot === "string" ? scene.shot : "镜头待设计",
+      action: scene.action || "",
+      dialogue: typeof scene.dialogue === "string" ? scene.dialogue : "",
+      narration: typeof scene.narration === "string" ? scene.narration : "",
+      source: typeof scene.source === "string" ? scene.source : source.map(chapter => chapter.title).join("、"),
+    }));
+    if (!episode.scenes.length) throw new Error("模型返回内容不完整，请重试");
+    ElMessage.success(`AI 已生成 ${episode.scenes.length} 个场景，请审核并修改`);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") ElMessage.info("已停止剧本生成");
+    else ElMessage.error(error instanceof Error ? error.message : "剧本生成失败");
+  } finally {
+    analyzing.value = false;
+    analysisController = undefined;
+  }
+}
+
 function createScript(episode: Episode) {
   const source = chapters.value.filter(chapter => episode.sourceChapterIds?.length ? episode.sourceChapterIds.includes(chapter.id) : episode.sourceChapterTitles.includes(chapter.title));
   const paragraphs = source.flatMap(chapter => chapter.content.split(/\n+/).map(value => value.trim()).filter(value => value.length > 12));
   episode.scenes = paragraphs.slice(0, 8).map((paragraph, index) => ({
     id: crypto.randomUUID(),
     location: index === 0 ? "场景待确认" : "地点待确认",
-    action: paragraph,
-    dialogue: "对白待提取 / 待编写",
+    time: "时间待确认", characters: [], shot: "镜头待设计",
+    action: paragraph, dialogue: "对白待提取 / 待编写", narration: "", source: source.map(chapter => chapter.title).join("、"),
   }));
   if (!episode.scenes.length) ElMessage.warning("本集原文内容为空，暂时无法生成场景");
   else ElMessage.success(`已根据原文段落生成 ${episode.scenes.length} 个场景初稿，请补充人物对白和镜头动作`);
@@ -499,6 +592,7 @@ function exportProject() {
 .episodeSource { padding: 8px 0; }
 .sceneList { display: grid; gap: 10px; padding-top: 10px; border-top: 1px solid var(--el-border-color); }
 .sceneCard { display: grid; gap: 8px; padding: 12px; border-radius: 8px; background: var(--el-fill-color-lighter); }
+.scriptActions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 @media (max-width: 760px) {
   .novelStudio { padding: 18px; }
   .studioHeader, .panelTitle { align-items: flex-start; flex-wrap: wrap; }
