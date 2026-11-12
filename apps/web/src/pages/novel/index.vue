@@ -174,14 +174,14 @@ function extractResponseText(message: unknown) {
   if (!message || typeof message !== "object" || !("content" in message) || !Array.isArray(message.content)) return "";
   return message.content.filter((part): part is { type: "text"; text: string } =>
     !!part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part && typeof part.text === "string")
-    .map(part => part.text).join("\\n");
+    .map(part => part.text).join("\n");
 }
 
 async function analyzeStory() {
   const choice = modelChoices.value.find(model => model.value === selectedModel.value);
   if (!choice) { ElMessage.warning("请先在设置中配置并选择一个语言模型"); return; }
   if (!chapters.value.length) return;
-  const novel = chapters.value.map((chapter, index) => `【第 ${index + 1} 章：${chapter.title}】\\n${chapter.content}`).join("\\n\\n");
+  const novel = chapters.value.map((chapter, index) => `【第 ${index + 1} 章：${chapter.title}】\n${chapter.content}`).join("\n\n");
   if (novel.length > 80000) { ElMessage.warning("当前版本单次分析最多处理 8 万字符，请先拆分章节或分批分析"); return; }
   const systemPrompt = [
     "你是一名专业的中文网文改编总编剧，负责把小说整理为可供漫剧制作的故事开发档案。",
@@ -189,8 +189,8 @@ async function analyzeStory() {
     "只输出合法 JSON，不要 Markdown 代码围栏或额外解释。",
     "JSON 结构：{logline:string,theme:string,conflict:string,world:string,characters:[{name:string,identity:string,goal:string,relationship:string}]}。",
     "人物只提取对主线有作用的主要人物，关系要写明依据；没有明确动机时写“待确认”。",
-  ].join("\\n");
-  const userPrompt = `作品：${novelTitle.value || "未命名小说"}\\n请分析以下小说原文并输出故事档案 JSON：\\n\\n${novel}`;
+  ].join("\n");
+  const userPrompt = `作品：${novelTitle.value || "未命名小说"}\n请分析以下小说原文并输出故事档案 JSON：\n\n${novel}`;
   analyzing.value = true;
   aiOutput.value = "";
   analysisController = new AbortController();
@@ -214,7 +214,7 @@ async function analyzeStory() {
     let fullText = "";
     let completed = false;
     const handleEvent = (raw: string) => {
-      const dataLine = raw.split("\\n").find(line => line.startsWith("data: "));
+      const dataLine = raw.split("\n").find(line => line.startsWith("data: "));
       if (!dataLine) return;
       const event = JSON.parse(dataLine.slice(6)) as { type?: string; delta?: string; message?: unknown };
       if (event.type === "text" && typeof event.delta === "string") {
@@ -231,7 +231,7 @@ async function analyzeStory() {
     while (true) {
       const { value, done } = await reader.read();
       buffer += decoder.decode(value, { stream: !done });
-      const events = buffer.split("\\n\\n");
+      const events = buffer.split("\n\n");
       buffer = events.pop() ?? "";
       for (const raw of events) handleEvent(raw);
       if (done) break;
