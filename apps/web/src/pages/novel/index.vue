@@ -127,7 +127,7 @@ import { modelChoices } from "@/stores/settings";
 
 type NovelChapter = { id: string; title: string; content: string };
 type Character = { id: string; name: string; identity: string; goal: string; relationship: string };
-type Scene = { id: string; location: string; time: string; characters: string[]; shot: string; action: string; dialogue: string; narration: string; source: string };
+type Scene = { id: string; location: string; time: string; characters: string; shot: string; action: string; dialogue: string; narration: string; source: string };
 type Episode = { id: string; number: number; title: string; goal: string; conflict: string; hook: string; chapterRange: string; sourceChapterTitles: string[]; sourceChapterIds: string[]; scenes: Scene[] };
 
 const fileInput = ref<HTMLInputElement>();
@@ -390,7 +390,7 @@ async function generateScriptWithAI(episode: Episode) {
     ? episode.sourceChapterIds.includes(chapter.id)
     : episode.sourceChapterTitles.includes(chapter.title));
   if (!source.length) { ElMessage.warning("本集没有关联原文章节，请先检查分集映射"); return; }
-  const original = source.map(chapter => `【${chapter.title}】\\n${chapter.content}`).join("\\n\\n");
+  const original = source.map(chapter => `【${chapter.title}】\n${chapter.content}`).join("\n\n");
   if (original.length > 50000) { ElMessage.warning("本集原文超过 5 万字符，请拆分章节或缩小本集范围"); return; }
   const systemPrompt = [
     "你是资深中文漫剧编剧和分镜导演。把给定小说片段改编为可制作的场景剧本。",
@@ -399,8 +399,8 @@ async function generateScriptWithAI(episode: Episode) {
     "镜头设计使用明确景别（远景/全景/中景/近景/特写）、机位和必要运镜；动作描述要可视化、可拍摄。",
     "只输出合法 JSON，不要 Markdown：{scenes:[{location:string,time:string,characters:string[],shot:string,action:string,dialogue:string,narration:string,source:string}]}。",
     "source 填写对应原文章节标题和关键原文依据；每集建议 3-8 场，避免把每个段落机械拆成一场。",
-  ].join("\\n");
-  const userPrompt = `作品：${novelTitle.value}\\n第 ${episode.number} 集：${episode.title}\\n本集目标：${episode.goal}\\n核心冲突：${episode.conflict}\\n结尾钩子：${episode.hook}\\n故事档案：${JSON.stringify(story.value)}\\n\\n原文：\\n${original}`;
+  ].join("\n");
+  const userPrompt = `作品：${novelTitle.value}\n第 ${episode.number} 集：${episode.title}\n本集目标：${episode.goal}\n核心冲突：${episode.conflict}\n结尾钩子：${episode.hook}\n故事档案：${JSON.stringify(story.value)}\n\n原文：\n${original}`;
   analyzing.value = true;
   aiOutput.value = "";
   analysisController = new AbortController();
@@ -422,7 +422,7 @@ async function generateScriptWithAI(episode: Episode) {
     let fullText = "";
     let completed = false;
     const handleEvent = (raw: string) => {
-      const dataLine = raw.split("\\n").find(line => line.startsWith("data: "));
+      const dataLine = raw.split("\n").find(line => line.startsWith("data: "));
       if (!dataLine) return;
       const event = JSON.parse(dataLine.slice(6)) as { type?: string; delta?: string; message?: unknown };
       if (event.type === "text" && typeof event.delta === "string") { fullText += event.delta; aiOutput.value = fullText; }
@@ -432,7 +432,7 @@ async function generateScriptWithAI(episode: Episode) {
     while (true) {
       const { value, done } = await reader.read();
       buffer += decoder.decode(value, { stream: !done });
-      const events = buffer.split("\\n\\n");
+      const events = buffer.split("\n\n");
       buffer = events.pop() ?? "";
       for (const raw of events) handleEvent(raw);
       if (done) break;
@@ -450,7 +450,7 @@ async function generateScriptWithAI(episode: Episode) {
       id: crypto.randomUUID(),
       location: typeof scene.location === "string" ? scene.location : "地点待确认",
       time: typeof scene.time === "string" ? scene.time : "时间待确认",
-      characters: Array.isArray(scene.characters) ? scene.characters.filter((name): name is string => typeof name === "string") : [],
+      characters: Array.isArray(scene.characters) ? scene.characters.filter((name): name is string => typeof name === "string").join("、") : "",
       shot: typeof scene.shot === "string" ? scene.shot : "镜头待设计",
       action: scene.action || "",
       dialogue: typeof scene.dialogue === "string" ? scene.dialogue : "",
@@ -474,7 +474,7 @@ function createScript(episode: Episode) {
   episode.scenes = paragraphs.slice(0, 8).map((paragraph, index) => ({
     id: crypto.randomUUID(),
     location: index === 0 ? "场景待确认" : "地点待确认",
-    time: "时间待确认", characters: [], shot: "镜头待设计",
+    time: "时间待确认", characters: "", shot: "镜头待设计",
     action: paragraph, dialogue: "对白待提取 / 待编写", narration: "", source: source.map(chapter => chapter.title).join("、"),
   }));
   if (!episode.scenes.length) ElMessage.warning("本集原文内容为空，暂时无法生成场景");
