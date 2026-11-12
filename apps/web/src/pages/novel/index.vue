@@ -82,7 +82,10 @@
     </section>
 
     <section v-if="chapters.length" class="episodePanel">
-      <div class="panelTitle"><div><h2>04 / 分集策划</h2><p>按章节顺序生成分集草案。每集目标、冲突和结尾钩子均可人工修改。</p></div><el-button type="primary" plain @click="buildEpisodes">重新生成分集草案</el-button></div>
+      <div class="panelTitle"><div><h2>04 / 分集策划</h2><p>按章节顺序生成分集草案。每集目标、冲突和结尾钩子均可人工修改。</p></div><div class="headerActions">
+          <el-button type="primary" :disabled="!selectedModel || analyzing" :loading="analyzing" @click="generateEpisodesWithAI">AI 生成分集</el-button>
+          <el-button plain @click="buildEpisodes">规则分集草案</el-button>
+        </div></div>
       <div class="episodeToolbar">
         <span>目标集数</span><el-input-number v-model="episodeCount" :min="1" :max="Math.max(1, chapters.length * 3)" />
         <el-text type="info">当前 {{ episodes.length }} 集</el-text>
@@ -263,6 +266,89 @@ async function analyzeStory() {
 
 function addCharacter() {
   story.value.characters.push({ id: crypto.randomUUID(), name: "", identity: "", goal: "", relationship: "" });
+}
+
+async function generateEpisodesWithAI() {
+  const choice = modelChoices.value.find(model => model.value === selectedModel.value);
+  if (!choice) { ElMessage.warning("请先选择一个语言模型"); return; }
+  if (!chapters.value.length) return;
+  const novel = chapters.value.map((chapter, index) => `【章节索引 ${index}：${chapter.title}】\\n${chapter.content}`).join("\\n\\n");
+  if (novel.length > 80000) { ElMessage.warning("当前版本单次分集规划最多处理 8 万字符，请先拆分小说"); return; }
+  const systemPrompt = [
+    "你是专业的漫剧总编剧。根据小说原文进行忠实改编，按用户指定集数规划连续剧情。",
+    "每集必须有明确的剧情目标、核心冲突和结尾钩子；集与集之间因果连续，不能平均切章节凑数。",
+    "不得添加原文不存在的关键人物或设定；不确定处写待确认。",
+    "只输出合法 JSON：{episodes:[{number:number,title:string,goal:string,conflict:string,hook:string,chapterIndexes:number[]}]}。",
+    "chapterIndexes 必须使用输入提供的章节索引，从 0 开始；每章至少分配给一集，不能引用不存在的索引。",
+  ].join("\\n");
+  const userPrompt = `作品：${novelTitle.value || "未命名小说"}\\n目标集数：${episodeCount.value}\\n故事档案：${JSON.stringify(story.value)}\\n\\n原文：\\n${novel}`;
+  analyzing.value = true;
+  aiOutput.value = "";
+  analysisController = new AbortController();
+  try {
+    const response = await fetch("/api/ai/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-toonflow-workspace": "1" },
+      signal: analysisController.signal,
+      body: JSON.stringify({ providerId: choice.providerId, modelId: choice.modelId,
+        context: { systemPrompt, messages: [{ role: "user", content: userPrompt, timestamp: Date.now() }] } }),
+    });
+    if (!response.ok || !response.body) {
+      const detail = await response.json().catch(() => null) as { message?: string } | null;
+      throw new Error(detail?.message || `模型请求失败（${response.status}）`);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let fullText = "";
+    let completed = false;
+    const handleEvent = (raw: string) => {
+      const dataLine = raw.split("\\n").find(line => line.startsWith("data: "));
+      if (!dataLine) return;
+      const event = JSON.parse(dataLine.slice(6)) as { type?: string; delta?: string; message?: unknown };
+      if (event.type === "text" && typeof event.delta === "string") { fullText += event.delta; aiOutput.value = fullText; }
+      else if (event.type === "done") { fullText = extractResponseText(event.message) || fullText; completed = true; }
+      else if (event.type === "error") throw new Error(typeof event.message === "string" ? event.message : "分集规划失败");
+    };
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const events = buffer.split("\\n\\n");
+      buffer = events.pop() ?? "";
+      for (const raw of events) handleEvent(raw);
+      if (done) break;
+    }
+    if (!completed) throw new Error("模型连接结束，但没有收到完整结果");
+    const jsonStart = fullText.indexOf("{");
+    const jsonEnd = fullText.lastIndexOf("}");
+    if (jsonStart < 0 || jsonEnd <= jsonStart) throw new Error("模型未返回有效 JSON");
+    const parsed = JSON.parse(fullText.slice(jsonStart, jsonEnd + 1)) as { episodes?: Array<{ number?: number; title?: string; goal?: string; conflict?: string; hook?: string; chapterIndexes?: number[] }> };
+    if (!Array.isArray(parsed.episodes) || !parsed.episodes.length) throw new Error("模型返回的分集列表为空");
+    const assigned = new Set<number>();
+    episodes.value = parsed.episodes.map((item, index) => {
+      const indexes = Array.isArray(item.chapterIndexes) ? [...new Set(item.chapterIndexes.filter(value => Number.isInteger(value) && value >= 0 && value < chapters.value.length))] : [];
+      indexes.forEach(value => assigned.add(value));
+      const source = indexes.map(value => chapters.value[value]!);
+      return {
+        id: crypto.randomUUID(), number: Number.isInteger(item.number) ? item.number! : index + 1,
+        title: typeof item.title === "string" ? item.title : `第 ${index + 1} 集`,
+        goal: typeof item.goal === "string" ? item.goal : "待补充",
+        conflict: typeof item.conflict === "string" ? item.conflict : "待补充",
+        hook: typeof item.hook === "string" ? item.hook : "待补充",
+        chapterRange: source.length ? source.length === 1 ? source[0]!.title : `${source[0]!.title} — ${source[source.length - 1]!.title}` : "原文范围待确认",
+        sourceChapterTitles: source.map(chapter => chapter.title), scenes: [],
+      };
+    });
+    const unassigned = chapters.value.map((_, index) => index).filter(index => !assigned.has(index));
+    if (unassigned.length) ElMessage.warning(`AI 规划完成，但有 ${unassigned.length} 章未分配，请人工检查`);
+    else ElMessage.success(`AI 已规划 ${episodes.value.length} 集，请审核剧情连续性`);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") ElMessage.info("已停止 AI 分集规划");
+    else ElMessage.error(error instanceof Error ? error.message : "AI 分集规划失败");
+  } finally {
+    analyzing.value = false;
+    analysisController = undefined;
+  }
 }
 
 function buildEpisodes() {
