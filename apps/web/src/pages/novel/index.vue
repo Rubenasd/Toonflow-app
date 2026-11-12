@@ -211,7 +211,7 @@ function loadSavedProject() {
       throw new Error("本地项目数据无效");
     }
     novelTitle.value = typeof data.title === "string" ? data.title : "未命名小说";
-    sourceText.value = typeof data.sourceText === "string" ? data.sourceText : data.chapters.map(item => item.content).join("\\n\\n");
+    sourceText.value = typeof data.sourceText === "string" ? data.sourceText : data.chapters.map(item => item.content).join("\n\n");
     chapters.value = data.chapters as NovelChapter[];
     story.value = data.story && typeof data.story === "object"
       ? { logline: "", theme: "", conflict: "", world: "", characters: [], ...(data.story as typeof story.value) }
@@ -236,7 +236,7 @@ async function importProject(event: Event) {
       throw new Error("项目文件缺少有效章节数据");
     }
     novelTitle.value = typeof data.title === "string" ? data.title : "导入的漫剧项目";
-    sourceText.value = typeof data.sourceText === "string" ? data.sourceText : data.chapters.map(item => item.content).join("\\n\\n");
+    sourceText.value = typeof data.sourceText === "string" ? data.sourceText : data.chapters.map(item => item.content).join("\n\n");
     chapters.value = data.chapters as NovelChapter[];
     story.value = data.story && typeof data.story === "object"
       ? { logline: "", theme: "", conflict: "", world: "", characters: [], ...(data.story as typeof story.value) }
